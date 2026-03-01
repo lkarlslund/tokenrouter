@@ -130,13 +130,13 @@ func (r *ProviderResolver) ListProviders() []config.ProviderConfig {
 			}
 		}
 	}
-	for _, p := range autoDetectedProviders(popularByName, seen, cfg.AutoEnablePublicFreeModels, cfg.AutoDetectLocalServers) {
+	for _, p := range autoDetectedProviders(popularByName, seen, cfg.AutoEnablePublicFreeModels, cfg.AutoDetectLocalServers, cfg.ListenAddr) {
 		out = append(out, p)
 	}
 	return out
 }
 
-func autoDetectedProviders(popularByName map[string]config.ProviderConfig, seen map[string]struct{}, autoMergeEnabled bool, autoDetectLocal bool) []config.ProviderConfig {
+func autoDetectedProviders(popularByName map[string]config.ProviderConfig, seen map[string]struct{}, autoMergeEnabled bool, autoDetectLocal bool, listenAddr string) []config.ProviderConfig {
 	out := make([]config.ProviderConfig, 0, 4)
 	addIfOnline := func(p config.ProviderConfig) {
 		name := strings.TrimSpace(p.Name)
@@ -164,7 +164,7 @@ func autoDetectedProviders(popularByName map[string]config.ProviderConfig, seen 
 		if ollama, ok := popularByName["ollama"]; ok {
 			addIfOnline(ollama)
 		}
-		for _, p := range autoDetectedLlamaCPPProviders() {
+		for _, p := range autoDetectedLlamaCPPProviders(listenAddr) {
 			addIfOnline(p)
 		}
 	}
@@ -179,8 +179,8 @@ func autoDetectedProviders(popularByName map[string]config.ProviderConfig, seen 
 	return out
 }
 
-func autoDetectedLlamaCPPProviders() []config.ProviderConfig {
-	processes := cachedLlamaCPPProcesses()
+func autoDetectedLlamaCPPProviders(listenAddr string) []config.ProviderConfig {
+	processes := cachedLlamaCPPProcesses(listenAddr)
 	if len(processes) == 0 {
 		return nil
 	}
@@ -204,7 +204,7 @@ func autoDetectedLlamaCPPProviders() []config.ProviderConfig {
 	return out
 }
 
-func cachedLlamaCPPProcesses() []llamaProcessInfo {
+func cachedLlamaCPPProcesses(listenAddr string) []llamaProcessInfo {
 	now := time.Now().UTC()
 	llamaProcessProbeState.mu.Lock()
 	if !llamaProcessProbeState.checkedAt.IsZero() && now.Sub(llamaProcessProbeState.checkedAt) < llamaProcessProbeTTL {
@@ -218,6 +218,16 @@ func cachedLlamaCPPProcesses() []llamaProcessInfo {
 	if llamaProcessProbeFn != nil {
 		found = llamaProcessProbeFn()
 	}
+	if selfPort, ok := localSelfProbePort(listenAddr); ok {
+		filtered := make([]llamaProcessInfo, 0, len(found))
+		for _, proc := range found {
+			if proc.Port == selfPort {
+				continue
+			}
+			filtered = append(filtered, proc)
+		}
+		found = filtered
+	}
 	found = dedupeAndSortLlamaProcesses(found)
 
 	llamaProcessProbeState.mu.Lock()
@@ -225,6 +235,20 @@ func cachedLlamaCPPProcesses() []llamaProcessInfo {
 	llamaProcessProbeState.processes = append([]llamaProcessInfo(nil), found...)
 	llamaProcessProbeState.mu.Unlock()
 	return found
+}
+
+func localSelfProbePort(listenAddr string) (int, bool) {
+	host, port := splitHostPortLoose(strings.TrimSpace(listenAddr))
+	if port <= 0 || port > 65535 {
+		return 0, false
+	}
+	h := strings.ToLower(strings.TrimSpace(host))
+	switch h {
+	case "", "0.0.0.0", "::", "::0", "*", "localhost", "127.0.0.1", "::1":
+		return port, true
+	default:
+		return 0, false
+	}
 }
 
 func dedupeAndSortLlamaProcesses(in []llamaProcessInfo) []llamaProcessInfo {
@@ -316,7 +340,7 @@ func probeLlamaCPPProcessesLinux() []llamaProcessInfo {
 		if !strings.Contains(low, "llama-server") && !strings.Contains(low, "llama_cpp.server") && !strings.Contains(low, "llama-cpp-python") {
 			continue
 		}
-		port := 8080
+		port := 7050
 		host := "127.0.0.1"
 		if m := llamaPortLongRE.FindStringSubmatch(line); len(m) == 2 {
 			if n, err := strconv.Atoi(m[1]); err == nil {
@@ -339,7 +363,7 @@ func probeLlamaCPPProcessesLinux() []llamaProcessInfo {
 
 func probeLlamaCPPProcessesByLocalProbe() []llamaProcessInfo {
 	hosts := []string{"127.0.0.1", "localhost"}
-	ports := []int{8080, 8081, 8082, 8083, 8000, 1337}
+	ports := []int{7050, 8080, 8081, 8082, 8083, 8000, 1337}
 	out := make([]llamaProcessInfo, 0, len(ports))
 	for _, h := range hosts {
 		for _, p := range ports {

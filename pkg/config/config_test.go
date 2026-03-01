@@ -10,7 +10,7 @@ import (
 
 func TestProviderConfigTOMLOmitsEmptyFields(t *testing.T) {
 	cfg := ServerConfig{
-		ListenAddr: ":8080",
+		ListenAddr: ":7050",
 		IncomingTokens: []IncomingAPIToken{
 			{ID: "tok-1", Name: "Token 1", Key: "k"},
 		},

@@ -205,7 +205,7 @@ func runConnectTUI(cmd *cobra.Command, path, explicitServerConfigPath string) er
 		if strings.TrimSpace(hints.ServerURL) != "" {
 			defaultURL = strings.TrimSpace(hints.ServerURL)
 		} else {
-			defaultURL = "http://localhost:8080"
+			defaultURL = "http://localhost:7050"
 		}
 	}
 
@@ -372,7 +372,7 @@ func readServerConnectHints(path string) (connectHints, error) {
 func connectURLFromServerConfig(httpListen string, tlsEnabled bool, tlsListen string) string {
 	scheme := "http"
 	addr := strings.TrimSpace(httpListen)
-	defaultPort := "8080"
+	defaultPort := "7050"
 	if tlsEnabled {
 		scheme = "https"
 		if strings.TrimSpace(tlsListen) != "" {
@@ -412,7 +412,7 @@ func shouldUseHintURL(serverURL string) bool {
 	if host != "localhost" && host != "127.0.0.1" {
 		return false
 	}
-	if port != "" && port != "8080" {
+	if port != "" && port != "7050" {
 		return false
 	}
 	if path != "" && path != "/v1" {
@@ -1698,14 +1698,9 @@ func runCodexWrap(cmd *cobra.Command, cfgPath, tokenName, model string, ttl time
 		fmt.Fprintln(cmd.ErrOrStderr(), selectedModelMsg)
 	}
 
-	launchArgs := make([]string, 0, len(codexArgs)+8)
-	launchArgs = append(launchArgs,
-		"-c", `forced_login_method="api"`,
-		"-c", `model_provider="tokenrouter"`,
-		"-c", `model_providers.tokenrouter={name="TokenRouter",base_url=`+strconv.Quote(strings.TrimSuffix(serverBase, "/")+"/v1")+`,env_key="CODEX_API_KEY",wire_api="responses",requires_openai_auth=false}`,
-	)
-	if strings.TrimSpace(selectedModel) != "" {
-		launchArgs = append(launchArgs, "-c", "model="+strconv.Quote(strings.TrimSpace(selectedModel)))
+	launchArgs := make([]string, 0, len(codexArgs)+2)
+	if strings.TrimSpace(selectedModel) != "" && !codexArgsContainModelSelection(codexArgs) {
+		launchArgs = append(launchArgs, "--model", strings.TrimSpace(selectedModel))
 	}
 	launchArgs = append(launchArgs, codexArgs...)
 	proc := exec.Command("codex", launchArgs...)
@@ -1726,9 +1721,6 @@ func runCodexWrap(cmd *cobra.Command, cfgPath, tokenName, model string, ttl time
 	env = append(env, "CODEX_BASE_URL="+strings.TrimSuffix(serverBase, "/")+"/v1")
 	env = append(env, "OPENAI_API_KEY="+key)
 	env = append(env, "CODEX_API_KEY="+key)
-	if strings.TrimSpace(selectedModel) != "" {
-		env = append(env, "OPENAI_MODEL="+strings.TrimSpace(selectedModel))
-	}
 	proc.Env = env
 	if err := proc.Run(); err != nil {
 		return err
@@ -1850,23 +1842,72 @@ func runGenericWrap(cmd *cobra.Command, cfgPath, tokenName string, ttl time.Dura
 }
 
 func codexArgsContainForcedLoginMethod(args []string) bool {
+	return codexArgsContainConfigKey(args, "forced_login_method")
+}
+
+func codexArgsContainOSS(args []string) bool {
+	for _, raw := range args {
+		v := strings.TrimSpace(raw)
+		if v == "--oss" {
+			return true
+		}
+		if strings.HasPrefix(v, "--oss=") {
+			return true
+		}
+	}
+	return false
+}
+
+func codexArgsContainModelSelection(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		v := strings.TrimSpace(args[i])
+		if v == "" {
+			continue
+		}
+		if v == "-m" || v == "--model" {
+			return true
+		}
+		if strings.HasPrefix(v, "-m=") || strings.HasPrefix(v, "--model=") {
+			return true
+		}
+	}
+	return codexArgsContainConfigKey(args, "model")
+}
+
+func codexArgsContainConfigKey(args []string, key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
 	for i := 0; i < len(args); i++ {
 		v := strings.TrimSpace(args[i])
 		if v == "" {
 			continue
 		}
 		if strings.HasPrefix(v, "-c") || strings.HasPrefix(v, "--config") {
-			if strings.Contains(v, "forced_login_method") {
+			if codexConfigFragmentContainsKey(v, key) {
 				return true
 			}
 			if (v == "-c" || v == "--config") && i+1 < len(args) {
-				if strings.Contains(args[i+1], "forced_login_method") {
+				if codexConfigFragmentContainsKey(args[i+1], key) {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+func codexConfigFragmentContainsKey(fragment, key string) bool {
+	s := strings.TrimSpace(fragment)
+	key = strings.TrimSpace(key)
+	if s == "" || key == "" {
+		return false
+	}
+	if s == key {
+		return true
+	}
+	return strings.HasPrefix(s, key+"=")
 }
 
 func filteredEnv(dropKeys []string) []string {

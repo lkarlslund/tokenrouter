@@ -171,7 +171,7 @@ func DefaultTLSCacheDir() string {
 
 func NewDefaultServerConfig() *ServerConfig {
 	return &ServerConfig{
-		ListenAddr:                 "127.0.0.1:8080",
+		ListenAddr:                 "127.0.0.1:7050",
 		HTTPMode:                   "enabled",
 		IncomingTokens:             []IncomingAPIToken{},
 		AllowLocalhostNoAuth:       true,
@@ -222,7 +222,7 @@ func HasAdminToken(tokens []IncomingAPIToken) bool {
 
 func NewDefaultClientConfig() *ClientConfig {
 	return &ClientConfig{
-		ServerURL: "http://127.0.0.1:8080/v1",
+		ServerURL: "http://127.0.0.1:7050/v1",
 	}
 }
 
@@ -409,7 +409,7 @@ func marshalTOML(v any) ([]byte, error) {
 
 func (c *ServerConfig) Normalize() {
 	if c.ListenAddr == "" {
-		c.ListenAddr = ":8080"
+		c.ListenAddr = ":7050"
 	}
 	c.HTTPMode = strings.ToLower(strings.TrimSpace(c.HTTPMode))
 	if c.HTTPMode == "" {
@@ -589,7 +589,7 @@ func (c *ClientConfig) Normalize() {
 	c.ServerURL = strings.TrimSpace(c.ServerURL)
 	c.APIKey = strings.TrimSpace(c.APIKey)
 	if c.ServerURL == "" {
-		c.ServerURL = "http://127.0.0.1:8080/v1"
+		c.ServerURL = "http://127.0.0.1:7050/v1"
 	}
 }
 

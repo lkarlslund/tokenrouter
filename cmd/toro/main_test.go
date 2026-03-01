@@ -49,12 +49,12 @@ func TestShouldUseHintURL(t *testing.T) {
 		want bool
 	}{
 		{name: "empty", in: "", want: true},
-		{name: "default with v1", in: "http://127.0.0.1:8080/v1", want: true},
-		{name: "localhost no path", in: "http://localhost:8080", want: true},
-		{name: "loopback no v1 path", in: "http://127.0.0.1:8080", want: true},
-		{name: "non-default localhost port", in: "http://127.0.0.1:7050", want: false},
+		{name: "default with v1", in: "http://127.0.0.1:7050/v1", want: true},
+		{name: "localhost no path", in: "http://localhost:7050", want: true},
+		{name: "loopback no v1 path", in: "http://127.0.0.1:7050", want: true},
+		{name: "non-default localhost port", in: "http://127.0.0.1:8080", want: false},
 		{name: "remote host", in: "https://api.example.com", want: false},
-		{name: "custom path", in: "http://127.0.0.1:8080/custom", want: false},
+		{name: "custom path", in: "http://127.0.0.1:7050/custom", want: false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -173,6 +173,27 @@ func TestParsePingPongModelsFlag(t *testing.T) {
 				t.Fatalf("parsePingPongModelsFlag(%q) => %q,%q want %q,%q", tc.in, a, b, tc.a, tc.b)
 			}
 		})
+	}
+}
+
+func TestCodexArgDetection(t *testing.T) {
+	if !codexArgsContainOSS([]string{"--oss"}) {
+		t.Fatal("expected --oss detection")
+	}
+	if !codexArgsContainConfigKey([]string{"-c", `model_provider="tokenrouter"`}, "model_provider") {
+		t.Fatal("expected model_provider config detection")
+	}
+	if !codexArgsContainForcedLoginMethod([]string{"--config", `forced_login_method="api"`}) {
+		t.Fatal("expected forced_login_method config detection")
+	}
+	if !codexArgsContainModelSelection([]string{"--model", "gpt-5"}) {
+		t.Fatal("expected --model detection")
+	}
+	if !codexArgsContainModelSelection([]string{"-c", `model="gpt-5"`}) {
+		t.Fatal("expected -c model= detection")
+	}
+	if codexArgsContainConfigKey([]string{"-c", `model="gpt-5"`}, "model_provider") {
+		t.Fatal("did not expect model_provider when only model is set")
 	}
 }
 

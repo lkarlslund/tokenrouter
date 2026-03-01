@@ -49,7 +49,7 @@ function adminApp() {
     networkBindMode: 'localhost',
     networkBindSelection: 'localhost',
     networkCustomBind: '',
-    networkPort: 8080,
+    networkPort: 7050,
     networkHTTPMode: 'enabled',
     networkActiveAddrs: [],
     networkDetectedAddrs: [],
@@ -114,6 +114,7 @@ function adminApp() {
     modelsRefreshInProgress: false,
     modelsInitialized: false,
     modelsInitialLoadInProgress: false,
+    providersRefreshInProgress: false,
     showBenchmarkModal: false,
     benchmarkRunning: false,
     benchmarkRun: null,
@@ -2990,8 +2991,8 @@ function adminApp() {
       } else {
         this.networkBindSelection = this.networkBindMode;
       }
-      const p = Number(body.port || 8080);
-      this.networkPort = (Number.isFinite(p) && p > 0) ? Math.trunc(p) : 8080;
+      const p = Number(body.port || 7050);
+      this.networkPort = (Number.isFinite(p) && p > 0) ? Math.trunc(p) : 7050;
       const httpMode = String(body.http_mode || '').trim().toLowerCase();
       this.networkHTTPMode = (httpMode === 'enabled' || httpMode === 'when_required' || httpMode === 'disabled') ? httpMode : 'enabled';
       this.networkActiveAddrs = Array.isArray(body.active) ? body.active.map((x) => String(x || '').trim()).filter(Boolean) : [];
@@ -4193,6 +4194,21 @@ function adminApp() {
       else this.toastError('Model refresh failed.');
       if (r.ok && (this.activeTab === 'models' || this.activeTab === 'performance')) {
         this.loadModelsCatalog(false);
+      }
+    },
+    async refreshProviders() {
+      if (this.providersRefreshInProgress) return;
+      this.providersRefreshInProgress = true;
+      try {
+        const r = await this.apiFetch('/admin/api/providers/refresh', {method:'POST', headers:this.headers()});
+        if (r.status === 401) { window.location = '/admin/login?next=/admin'; return; }
+        if (r.ok) this.toastSuccess('Provider refresh completed.');
+        else this.toastError('Provider refresh failed.');
+        if (r.ok) {
+          await this.loadProviders();
+        }
+      } finally {
+        this.providersRefreshInProgress = false;
       }
     }
   }

@@ -86,6 +86,7 @@ func TestResolveWithAutoPublicFreeProvider(t *testing.T) {
 func TestListProvidersResolvesConfiguredPresetDefaults(t *testing.T) {
 	cfg := config.NewDefaultServerConfig()
 	cfg.AutoEnablePublicFreeModels = false
+	cfg.AutoDetectLocalServers = false
 	cfg.Providers = []config.ProviderConfig{
 		{
 			Name:    "opencode-zen",
@@ -206,6 +207,7 @@ func TestResolveNormalizesModelsPrefix(t *testing.T) {
 func TestListProvidersResolvesPresetDefaultsUsingProviderType(t *testing.T) {
 	cfg := config.NewDefaultServerConfig()
 	cfg.AutoEnablePublicFreeModels = false
+	cfg.AutoDetectLocalServers = false
 	cfg.Providers = []config.ProviderConfig{
 		{
 			Name:         "openai-work",
@@ -509,6 +511,66 @@ func TestListProvidersAutoDetectsLlamaCPPProcesses(t *testing.T) {
 	}
 	if len(want) != 0 {
 		t.Fatalf("missing auto-detected llama.cpp providers: %+v", want)
+	}
+}
+
+func TestListProvidersSkipsSelfListenPortForLocalAutoDetect(t *testing.T) {
+	prevProbeFn := autoProviderProbeFn
+	prevEnv := autoProviderEnvLookup
+	prevLlamaProbe := llamaProcessProbeFn
+	autoProviderProbeFn = func(p config.ProviderConfig) bool {
+		return strings.HasPrefix(strings.TrimSpace(p.Name), "llama-cpp-local-")
+	}
+	autoProviderEnvLookup = func(string) string { return "" }
+	llamaProcessProbeFn = func() []llamaProcessInfo {
+		return []llamaProcessInfo{
+			{Host: "127.0.0.1", Port: 8080},
+			{Host: "127.0.0.1", Port: 8081},
+		}
+	}
+	autoProviderProbeState.mu.Lock()
+	autoProviderProbeState.byKey = map[string]autoProviderProbeResult{}
+	autoProviderProbeState.mu.Unlock()
+	llamaProcessProbeState.mu.Lock()
+	llamaProcessProbeState.checkedAt = time.Time{}
+	llamaProcessProbeState.processes = nil
+	llamaProcessProbeState.mu.Unlock()
+	defer func() {
+		autoProviderProbeFn = prevProbeFn
+		autoProviderEnvLookup = prevEnv
+		llamaProcessProbeFn = prevLlamaProbe
+		autoProviderProbeState.mu.Lock()
+		autoProviderProbeState.byKey = map[string]autoProviderProbeResult{}
+		autoProviderProbeState.mu.Unlock()
+		llamaProcessProbeState.mu.Lock()
+		llamaProcessProbeState.checkedAt = time.Time{}
+		llamaProcessProbeState.processes = nil
+		llamaProcessProbeState.mu.Unlock()
+	}()
+
+	cfg := config.NewDefaultServerConfig()
+	cfg.ListenAddr = "0.0.0.0:8080"
+	cfg.Providers = nil
+	cfg.AutoEnablePublicFreeModels = false
+	cfg.AutoDetectLocalServers = true
+	store := config.NewServerConfigStore("/tmp/non-persistent.toml", cfg)
+	r := NewProviderResolver(store)
+
+	providers := r.ListProviders()
+	for _, p := range providers {
+		if p.Name == "llama-cpp-local-8080" {
+			t.Fatalf("did not expect self-listen address to be auto-detected: %+v", p)
+		}
+	}
+	found8081 := false
+	for _, p := range providers {
+		if p.Name == "llama-cpp-local-8081" {
+			found8081 = true
+			break
+		}
+	}
+	if !found8081 {
+		t.Fatalf("expected non-self local server to remain detectable, got %+v", providers)
 	}
 }
 

@@ -232,6 +232,35 @@ func (m *Manager) Snapshot() Cache {
 	return cp
 }
 
+func (m *Manager) TouchProviderFresh(provider string, at time.Time) error {
+	name := strings.TrimSpace(provider)
+	if name == "" {
+		return nil
+	}
+	when := at.UTC()
+	if when.IsZero() {
+		when = time.Now().UTC()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cache.ProviderStates == nil {
+		m.cache.ProviderStates = map[string]ProviderState{}
+	}
+	state := m.cache.ProviderStates[name]
+	if state.LastAttempt.Before(when) {
+		state.LastAttempt = when
+	}
+	if state.LastUpdate.Before(when) {
+		state.LastUpdate = when
+	}
+	state.LastError = ""
+	m.cache.ProviderStates[name] = state
+	if m.cache.UpdatedAt.Before(when) {
+		m.cache.UpdatedAt = when
+	}
+	return m.saveLocked()
+}
+
 func (m *Manager) load() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

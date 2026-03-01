@@ -63,7 +63,7 @@ func init() {
 		},
 	}
 	serveCmd.Flags().StringVar(&serveConfigPath, "config", config.DefaultServerConfigPath(), "Server config TOML path")
-	serveCmd.Flags().StringVar(&serveListenAddrOverride, "listen-addr", "", "Override listen address from config (e.g. 127.0.0.1:8080)")
+	serveCmd.Flags().StringVar(&serveListenAddrOverride, "listen-addr", "", "Override listen address from config (e.g. 127.0.0.1:7050)")
 	serveCmd.Flags().BoolVar(&serveAllowLocalhostNoAuth, "allow-localhost-no-auth", false, "Override allow_localhost_no_auth in config")
 	serveCmd.Flags().BoolVar(&serveAutoEnablePublicFreeModels, "auto-enable-public-free-models", false, "Override auto_enable_public_free_models in config")
 	rootCmd.AddCommand(serveCmd)

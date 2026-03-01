@@ -7,6 +7,7 @@
           <div class="d-flex gap-2">
             <button class="icon-btn" title="Provider settings" aria-label="Provider settings" @click="openProvidersSettingsModal()">⚙</button>
             <button class="btn btn-sm btn-primary" @click="openAddProviderModal()">Add Provider</button>
+            <button class="icon-btn" :disabled="providersRefreshInProgress" @click="refreshProviders()" :title="providersRefreshInProgress ? 'Refreshing' : 'Refresh'" aria-label="Refresh">↻</button>
           </div>
         </div>
         <div class="table-responsive" x-html="providersTableHtml"></div>

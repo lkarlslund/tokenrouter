@@ -23,7 +23,7 @@ func TestLoadServerConfigMigratesLegacyIncomingAPIKeys(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, defaultConfigFileName)
 	legacyToml := `
-listen_addr = ":8080"
+listen_addr = ":7050"
 incoming_api_keys = ["k1", "k2", "k1", ""]
 `
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(legacyToml)+"\n"), 0o600); err != nil {
@@ -45,7 +45,7 @@ func TestLoadServerConfigMigratesLegacyAdminAPIKeyToIncomingAdminToken(t *testin
 	dir := t.TempDir()
 	path := filepath.Join(dir, defaultConfigFileName)
 	legacyToml := `
-listen_addr = ":8080"
+listen_addr = ":7050"
 admin_api_key = "legacy-admin-secret"
 `
 	if err := os.WriteFile(path, []byte(strings.TrimSpace(legacyToml)+"\n"), 0o600); err != nil {

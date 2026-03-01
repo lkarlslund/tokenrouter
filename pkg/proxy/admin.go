@@ -277,6 +277,7 @@ func (h *AdminHandler) RegisterRoutes(r chi.Router) {
 	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Post("/admin/api/providers/device-token", h.providerDeviceTokenAPI)
 	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Post("/admin/api/providers/oauth/start", h.providerOAuthStartAPI)
 	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Get("/admin/api/providers/oauth/result", h.providerOAuthResultAPI)
+	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Post("/admin/api/providers/refresh", h.refreshProvidersAPI)
 	r.With(h.withRuntimeInstanceHeader).Get("/admin/oauth/callback", h.providerOAuthCallbackPage)
 	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Get("/admin/api/providers", h.providersAPI)
 	r.With(h.withRuntimeInstanceHeader, h.requireAdminAPI).Post("/admin/api/providers", h.providersAPI)
@@ -3727,7 +3728,7 @@ func (h *AdminHandler) networkApplyAPI(w http.ResponseWriter, r *http.Request) {
 	}
 	oldAddr := strings.TrimSpace(cfg.ListenAddr)
 	if oldAddr == "" {
-		oldAddr = "127.0.0.1:8080"
+		oldAddr = "127.0.0.1:7050"
 	}
 	if newAddr == oldAddr && httpMode == strings.ToLower(strings.TrimSpace(cfg.HTTPMode)) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -3938,7 +3939,7 @@ func (h *AdminHandler) networkProbeAPI(w http.ResponseWriter, r *http.Request) {
 func decomposeListenAddr(listenAddr string) (bindMode string, customBind string, port int) {
 	host, p := splitHostPortLoose(strings.TrimSpace(listenAddr))
 	if p <= 0 {
-		p = 8080
+		p = 7050
 	}
 	switch strings.TrimSpace(host) {
 	case "", "0.0.0.0", "::":
@@ -3978,17 +3979,17 @@ func composeListenAddr(bindMode, customBind string, port int) (listenAddr string
 func splitHostPortLoose(addr string) (host string, port int) {
 	a := strings.TrimSpace(addr)
 	if a == "" {
-		return "", 8080
+		return "", 7050
 	}
 	if strings.HasPrefix(a, ":") {
 		if n, err := strconv.Atoi(strings.TrimPrefix(a, ":")); err == nil {
 			return "", n
 		}
-		return "", 8080
+		return "", 7050
 	}
 	h, p, err := net.SplitHostPort(a)
 	if err != nil {
-		return a, 8080
+		return a, 7050
 	}
 	n, _ := strconv.Atoi(strings.TrimSpace(p))
 	return strings.TrimSpace(h), n
@@ -5951,6 +5952,120 @@ func (h *AdminHandler) refreshModelsAPI(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": models})
+}
+
+func (h *AdminHandler) refreshProvidersAPI(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	providers := h.catalogProviders()
+	ctx, cancel := context.WithTimeout(r.Context(), 45*time.Second)
+	defer cancel()
+	if h.healthChecker != nil {
+		h.healthChecker.checkOnce(ctx, true)
+	}
+	pricingFreshTouched := 0
+	if h.pricing != nil {
+		for _, p := range providers {
+			pp := refreshOAuthTokenForProvider(ctx, h.store, p)
+			hasPricing := probeModelsEndpointHasPricing(ctx, pp)
+			if !hasPricing {
+				continue
+			}
+			if err := h.pricing.TouchProviderFresh(pp.Name, time.Now().UTC()); err == nil {
+				pricingFreshTouched++
+			}
+		}
+	}
+	if h.healthChecker != nil {
+		h.healthChecker.Trigger()
+	}
+	h.notifyAdminChanged("providers")
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"providers":             len(providers),
+		"pricing_fresh_touched": pricingFreshTouched,
+	})
+}
+
+func probeModelsEndpointHasPricing(ctx context.Context, p config.ProviderConfig) bool {
+	base := strings.TrimSpace(p.BaseURL)
+	if base == "" {
+		return false
+	}
+	u, err := url.Parse(strings.TrimRight(base, "/"))
+	if err != nil {
+		return false
+	}
+	u.Path = joinProviderPath(u.Path, "/v1/models")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return false
+	}
+	applyUpstreamProviderHeaders(req, p, http.Header{})
+	timeout := p.TimeoutSeconds
+	if timeout <= 0 {
+		timeout = 60
+	}
+	cli := &http.Client{Timeout: time.Duration(timeout) * time.Second}
+	resp, err := cli.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return false
+	}
+	var payload struct {
+		Data []map[string]any `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 2<<20)).Decode(&payload); err != nil {
+		return false
+	}
+	for _, item := range payload.Data {
+		if modelsJSONIncludesPricing(item) {
+			return true
+		}
+	}
+	return false
+}
+
+func modelsJSONIncludesPricing(item map[string]any) bool {
+	if item == nil {
+		return false
+	}
+	if pricing, ok := item["pricing"].(map[string]any); ok {
+		for _, k := range []string{"prompt", "completion", "input", "output"} {
+			if _, ok := pricing[k]; ok {
+				return true
+			}
+		}
+	}
+	if _, ok := item["input_cost_per_token"]; ok {
+		return true
+	}
+	if _, ok := item["output_cost_per_token"]; ok {
+		return true
+	}
+	if providers, ok := item["providers"].([]any); ok {
+		for _, raw := range providers {
+			pm, ok := raw.(map[string]any)
+			if !ok {
+				continue
+			}
+			pricing, ok := pm["pricing"].(map[string]any)
+			if !ok {
+				continue
+			}
+			for _, k := range []string{"prompt", "completion", "input", "output"} {
+				if _, ok := pricing[k]; ok {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (h *AdminHandler) benchmarkStatusAPI(w http.ResponseWriter, r *http.Request) {

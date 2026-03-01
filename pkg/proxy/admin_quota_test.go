@@ -308,6 +308,7 @@ func TestReadAutoHeaderQuotaRequiresKeyForNonPublicProvider(t *testing.T) {
 func TestQuotaProvidersExcludesDisabledConfiguredProviders(t *testing.T) {
 	cfg := config.NewDefaultServerConfig()
 	cfg.AutoEnablePublicFreeModels = false
+	cfg.AutoDetectLocalServers = false
 	cfg.Providers = []config.ProviderConfig{
 		{Name: "enabled-one", ProviderType: "openai", BaseURL: "https://api.openai.com/v1", Enabled: true, TimeoutSeconds: 30},
 		{Name: "disabled-one", ProviderType: "openai", BaseURL: "https://api.openai.com/v1", Enabled: false, TimeoutSeconds: 30},
