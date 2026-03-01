@@ -1,12 +1,13 @@
 name: Rolling Release
 
 on:
-  push:
-    branches:
-      - master
   schedule:
-    - cron: "17 2 * * *"
+    - cron: "17,47 * * * *"
   workflow_dispatch:
+
+concurrency:
+  group: rolling-release-master
+  cancel-in-progress: true
 
 permissions:
   contents: write
@@ -16,6 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       ROLLING_MIN_INTERVAL_SECONDS: "21600" # 6 hours
+      ROLLING_MIN_COMMIT_AGE_SECONDS: "7200" # 2 hours
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,23 +43,36 @@ jobs:
           fi
 
           head_commit="$(git rev-parse HEAD)"
+          head_epoch="$(git show -s --format=%ct "${head_commit}")"
           if [ -n "${latest_tag}" ]; then
             latest_commit="$(git rev-list -n1 "${latest_tag}")"
           else
             latest_commit=""
           fi
 
+          has_new_commits="false"
+          if [ -z "${latest_tag}" ] || [ "${latest_commit}" != "${head_commit}" ]; then
+            has_new_commits="true"
+          fi
+
           run_release="true"
           reason="publish"
-
-          if [ -n "${latest_tag}" ] && [ "${latest_commit}" = "${head_commit}" ]; then
+          if [ "${has_new_commits}" != "true" ]; then
             run_release="false"
-            reason="head-already-tagged"
-          elif [ "${EVENT_NAME}" = "push" ] && [ -n "${latest_tag}" ]; then
+            reason="no-new-commits"
+          fi
+
+          commit_age=$((now - head_epoch))
+          if [ "${run_release}" = "true" ] && [ "${commit_age}" -lt "${ROLLING_MIN_COMMIT_AGE_SECONDS}" ]; then
+            run_release="false"
+            reason="head-too-fresh"
+          fi
+
+          if [ "${run_release}" = "true" ] && [ "${latest_epoch}" -gt 0 ]; then
             elapsed=$((now - latest_epoch))
             if [ "${elapsed}" -lt "${ROLLING_MIN_INTERVAL_SECONDS}" ]; then
               run_release="false"
-              reason="rate-limited"
+              reason="min-release-interval"
             fi
           fi
 
@@ -65,8 +80,11 @@ jobs:
           echo "reason=${reason}" >> "$GITHUB_OUTPUT"
           echo "latest_tag=${latest_tag}" >> "$GITHUB_OUTPUT"
           echo "latest_epoch=${latest_epoch}" >> "$GITHUB_OUTPUT"
+          echo "head_epoch=${head_epoch}" >> "$GITHUB_OUTPUT"
+          echo "head_commit=${head_commit}" >> "$GITHUB_OUTPUT"
+          echo "has_new_commits=${has_new_commits}" >> "$GITHUB_OUTPUT"
           echo "event=${EVENT_NAME}" >> "$GITHUB_OUTPUT"
-          echo "gate: event=${EVENT_NAME} latest_tag=${latest_tag:-none} reason=${reason} run_release=${run_release}"
+          echo "gate: event=${EVENT_NAME} latest_tag=${latest_tag:-none} has_new_commits=${has_new_commits} reason=${reason} run_release=${run_release}"
 
       - name: Setup Go
         if: steps.gate.outputs.run_release == 'true'
