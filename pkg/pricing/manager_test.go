@@ -27,6 +27,26 @@ func TestExtractZenModelIDs(t *testing.T) {
 	}
 }
 
+func TestNormalizePricingModelID(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		provider string
+		in       string
+		want     string
+	}{
+		{name: "bare", provider: "opencode-zen", in: "gpt-5-nano", want: "gpt-5-nano"},
+		{name: "prefixed", provider: "opencode-zen", in: "opencode-zen/gpt-5-nano", want: "gpt-5-nano"},
+		{name: "models prefix", provider: "google-gemini", in: "models/gemini-2.5-flash", want: "gemini-2.5-flash"},
+		{name: "other provider prefix preserved", provider: "opencode-zen", in: "openai/gpt-5", want: "openai/gpt-5"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := normalizePricingModelID(tc.provider, tc.in); got != tc.want {
+				t.Fatalf("normalizePricingModelID(%q, %q) = %q, want %q", tc.provider, tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestUniqueStrings(t *testing.T) {
 	in := []string{"a", "b", "a", "c", "b"}
 	out := uniqueStrings(in)

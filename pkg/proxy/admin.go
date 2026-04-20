@@ -123,16 +123,16 @@ type oauthSession struct {
 }
 
 type benchmarkRun struct {
-	ID               string                  `json:"id"`
-	StartedAt        string                  `json:"started_at"`
-	Status           string                  `json:"status"`
-	Strategy         benchmarkStrategy       `json:"strategy"`
-	Models           []benchmarkModelProgress `json:"models"`
-	TotalPrompt      int                     `json:"total_prompt_tokens"`
-	TotalCompletion  int                     `json:"total_completion_tokens"`
-	TotalTokens      int                     `json:"total_tokens"`
-	Error            string                  `json:"error,omitempty"`
-	cancel           context.CancelFunc
+	ID              string                   `json:"id"`
+	StartedAt       string                   `json:"started_at"`
+	Status          string                   `json:"status"`
+	Strategy        benchmarkStrategy        `json:"strategy"`
+	Models          []benchmarkModelProgress `json:"models"`
+	TotalPrompt     int                      `json:"total_prompt_tokens"`
+	TotalCompletion int                      `json:"total_completion_tokens"`
+	TotalTokens     int                      `json:"total_tokens"`
+	Error           string                   `json:"error,omitempty"`
+	cancel          context.CancelFunc
 }
 
 type benchmarkStrategy struct {
@@ -6411,6 +6411,13 @@ func (h *AdminHandler) modelsCatalogAPI(w http.ResponseWriter, r *http.Request) 
 				provider = strings.TrimSpace(p.Name)
 			}
 			modelID := strings.TrimSpace(m.ID)
+			for {
+				prefix, stripped, ok := splitModelPrefix(modelID)
+				if !ok || !strings.EqualFold(strings.TrimSpace(prefix), provider) {
+					break
+				}
+				modelID = stripped
+			}
 			key := usageKey(provider, modelID)
 			seenModel[key] = struct{}{}
 			entry, ok := cache.Entries[provider+"/"+modelID]
@@ -6432,6 +6439,9 @@ func (h *AdminHandler) modelsCatalogAPI(w http.ResponseWriter, r *http.Request) 
 				}
 			} else if dn, ok := displayNames[provider]; ok {
 				item.ProviderDisplayName = dn
+			}
+			if !ok {
+				entry, ok = cache.Entries[provider+"/"+provider+"/"+modelID]
 			}
 			if ok {
 				item.Currency = entry.Currency
@@ -6483,6 +6493,13 @@ func (h *AdminHandler) modelsCatalogAPI(w http.ResponseWriter, r *http.Request) 
 		pn, modelID, ok := splitModelPrefix(key)
 		if !ok {
 			continue
+		}
+		for {
+			prefix, stripped, ok := splitModelPrefix(modelID)
+			if !ok || !strings.EqualFold(strings.TrimSpace(prefix), pn) {
+				break
+			}
+			modelID = stripped
 		}
 		if _, exists := seenModel[usageKey(pn, modelID)]; exists {
 			continue

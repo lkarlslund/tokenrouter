@@ -20,6 +20,7 @@ import (
 	"github.com/lkarlslund/tokenrouter/pkg/assets"
 	"github.com/lkarlslund/tokenrouter/pkg/cache"
 	"github.com/lkarlslund/tokenrouter/pkg/config"
+	"github.com/lkarlslund/tokenrouter/pkg/provider"
 )
 
 type ModelPricing struct {
@@ -169,6 +170,10 @@ func (m *Manager) refreshInternal(ctx context.Context, force bool) error {
 			}
 		}
 		for _, e := range entries {
+			e.Model = normalizePricingModelID(p.Name, e.Model)
+			if strings.TrimSpace(e.Model) == "" {
+				continue
+			}
 			e.Provider = p.Name
 			e.DiscoveredAt = now
 			e.Source = source
@@ -318,6 +323,18 @@ func providerTypeOrName(p config.ProviderConfig) string {
 		return strings.ToLower(v)
 	}
 	return strings.ToLower(strings.TrimSpace(p.Name))
+}
+
+func normalizePricingModelID(providerName, modelID string) string {
+	modelID = provider.NormalizeModelID(modelID)
+	for {
+		prefix, stripped, ok := provider.SplitModelPrefix(modelID)
+		if !ok || !strings.EqualFold(strings.TrimSpace(prefix), strings.TrimSpace(providerName)) {
+			break
+		}
+		modelID = provider.NormalizeModelID(stripped)
+	}
+	return strings.TrimSpace(modelID)
 }
 
 func loadPopularProvidersByID() map[string]assets.PopularProvider {
