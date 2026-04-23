@@ -65,6 +65,8 @@ type Server struct {
 
 const accessTokenCleanupInterval = 1 * time.Minute
 const modelNotFoundRefreshDebounce = 2 * time.Minute
+const defaultUpstreamRetryCount = 2
+const defaultUpstreamRetryBackoff = 250 * time.Millisecond
 
 func NewServer(configPath string, cfg *config.ServerConfig) (*Server, error) {
 	store := config.NewServerConfigStore(configPath, cfg)
@@ -1064,25 +1066,37 @@ func (s *Server) forwardRequest(ctx context.Context, provider config.ProviderCon
 		requestPath = "/codex/responses"
 	}
 	u.Path = joinProviderPath(u.Path, requestPath)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return nil, 0, nil, 0, err
-	}
-	applyUpstreamProviderHeaders(req, provider, clientHeaders)
-
 	cli := &http.Client{Timeout: time.Duration(provider.TimeoutSeconds) * time.Second}
-	upstreamStart := time.Now()
-	resp, err := cli.Do(req)
-	if err != nil {
-		return nil, 0, nil, 0, err
+	var initialLatency time.Duration
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+		if err != nil {
+			return nil, 0, nil, 0, err
+		}
+		applyUpstreamProviderHeaders(req, provider, clientHeaders)
+
+		upstreamStart := time.Now()
+		resp, err := cli.Do(req)
+		initialLatency = time.Since(upstreamStart)
+		if err != nil {
+			if attempt < defaultUpstreamRetryCount && shouldRetryUpstreamError(err) && sleepWithContext(ctx, upstreamRetryDelay(attempt)) == nil {
+				continue
+			}
+			return nil, 0, nil, 0, err
+		}
+		b, readErr := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
+		_ = resp.Body.Close()
+		if readErr != nil {
+			if attempt < defaultUpstreamRetryCount && shouldRetryUpstreamError(readErr) && sleepWithContext(ctx, upstreamRetryDelay(attempt)) == nil {
+				continue
+			}
+			return nil, 0, nil, initialLatency, readErr
+		}
+		if attempt < defaultUpstreamRetryCount && shouldRetryUpstreamStatus(resp.StatusCode) && sleepWithContext(ctx, upstreamRetryDelay(attempt)) == nil {
+			continue
+		}
+		return b, resp.StatusCode, resp.Header.Clone(), initialLatency, nil
 	}
-	defer resp.Body.Close()
-	initialLatency := time.Since(upstreamStart)
-	b, err := io.ReadAll(io.LimitReader(resp.Body, 16<<20))
-	if err != nil {
-		return nil, 0, nil, initialLatency, err
-	}
-	return b, resp.StatusCode, resp.Header.Clone(), initialLatency, nil
 }
 
 type usageTokenCounts struct {
@@ -1120,20 +1134,38 @@ func (s *Server) forwardStreamingRequest(ctx context.Context, provider config.Pr
 		requestPath = "/codex/responses"
 	}
 	u.Path = joinProviderPath(u.Path, requestPath)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, usageTokenCounts{}, 0, err
-	}
-	applyUpstreamProviderHeaders(req, provider, clientHeaders)
-
 	cli := &http.Client{Timeout: time.Duration(provider.TimeoutSeconds) * time.Second}
-	upstreamStart := time.Now()
-	resp, err := cli.Do(req)
-	if err != nil {
-		return 0, nil, usageTokenCounts{}, 0, err
+	var (
+		resp           *http.Response
+		initialLatency time.Duration
+		upstreamStart  time.Time
+	)
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(body))
+		if err != nil {
+			return 0, nil, usageTokenCounts{}, 0, err
+		}
+		applyUpstreamProviderHeaders(req, provider, clientHeaders)
+
+		upstreamStart = time.Now()
+		resp, err = cli.Do(req)
+		initialLatency = time.Since(upstreamStart)
+		if err != nil {
+			if attempt < defaultUpstreamRetryCount && shouldRetryUpstreamError(err) && sleepWithContext(ctx, upstreamRetryDelay(attempt)) == nil {
+				continue
+			}
+			return 0, nil, usageTokenCounts{}, 0, err
+		}
+		if attempt < defaultUpstreamRetryCount && shouldRetryUpstreamStatus(resp.StatusCode) {
+			_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 8<<10))
+			_ = resp.Body.Close()
+			if sleepWithContext(ctx, upstreamRetryDelay(attempt)) == nil {
+				continue
+			}
+		}
+		break
 	}
 	defer resp.Body.Close()
-	initialLatency := time.Since(upstreamStart)
 	firstChunkLatency := time.Duration(0)
 	upstreamHeader := resp.Header.Clone()
 
@@ -1198,6 +1230,54 @@ func (s *Server) forwardStreamingRequest(ctx context.Context, provider config.Pr
 			usage.CapturedStreamRaw = capConversationRawText(rawCapture, maxCapturedStreamRawBytes)
 			return resp.StatusCode, upstreamHeader, usage, initialLatency, readErr
 		}
+	}
+}
+
+func shouldRetryUpstreamStatus(status int) bool {
+	switch status {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
+	}
+}
+
+func shouldRetryUpstreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.EOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	msg := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(msg, "timeout") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "broken pipe") ||
+		strings.Contains(msg, "unexpected eof")
+}
+
+func upstreamRetryDelay(attempt int) time.Duration {
+	if attempt < 0 {
+		attempt = 0
+	}
+	return defaultUpstreamRetryBackoff * time.Duration(1<<attempt)
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
 	}
 }
 
@@ -1381,6 +1461,8 @@ func shouldDropForwardedRequestHeader(key string) bool {
 		"connection",
 		"proxy-connection",
 		"keep-alive",
+		"accept-encoding",
+		"content-encoding",
 		"transfer-encoding",
 		"upgrade",
 		"te",

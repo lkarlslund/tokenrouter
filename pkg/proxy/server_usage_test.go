@@ -196,6 +196,90 @@ func TestProxyHandlerCapturesSeparateConversationsByHeader(t *testing.T) {
 	}
 }
 
+func TestProxyHandlerRetriesTransientBadGateway(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls < 3 {
+			http.Error(w, `{"error":"temporary upstream failure"}`, http.StatusBadGateway)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp_retry_ok","choices":[{"message":{"role":"assistant","content":"retried ok"}}]}`))
+	}))
+	defer upstream.Close()
+
+	cfg := config.NewDefaultServerConfig()
+	cfg.Providers = []config.ProviderConfig{
+		{
+			Name:           "test-provider",
+			BaseURL:        upstream.URL + "/v1",
+			APIKey:         "test-key",
+			Enabled:        true,
+			TimeoutSeconds: 10,
+		},
+	}
+	store := config.NewServerConfigStore(filepath.Join(t.TempDir(), "config.toml"), cfg)
+	resolver := NewProviderResolver(store)
+	s := &Server{
+		store:                 store,
+		resolver:              resolver,
+		stats:                 NewStatsStore(100),
+		providerHealthChecker: NewProviderHealthChecker(resolver, providerHealthCheckInterval),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test-provider/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.proxyHandler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after retries, got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 3 {
+		t.Fatalf("expected 3 upstream attempts, got %d", calls)
+	}
+}
+
+func TestProxyHandlerDoesNotRetryUnauthorized(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
+	}))
+	defer upstream.Close()
+
+	cfg := config.NewDefaultServerConfig()
+	cfg.Providers = []config.ProviderConfig{
+		{
+			Name:           "test-provider",
+			BaseURL:        upstream.URL + "/v1",
+			APIKey:         "test-key",
+			Enabled:        true,
+			TimeoutSeconds: 10,
+		},
+	}
+	store := config.NewServerConfigStore(filepath.Join(t.TempDir(), "config.toml"), cfg)
+	resolver := NewProviderResolver(store)
+	s := &Server{
+		store:                 store,
+		resolver:              resolver,
+		stats:                 NewStatsStore(100),
+		providerHealthChecker: NewProviderHealthChecker(resolver, providerHealthCheckInterval),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":"test-provider/test-model","messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	s.proxyHandler(w, req)
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 without retry, got %d body=%s", w.Code, w.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("expected 1 upstream attempt, got %d", calls)
+	}
+}
+
 func TestParseConversationRequestIDsPrefersHeaderAndReadsMetadata(t *testing.T) {
 	h := http.Header{}
 	h.Set("X-Conversation-ID", "header-conv")

@@ -59,3 +59,45 @@ func TestForwardStreamingRequestRelaysSSEBody(t *testing.T) {
 		t.Fatalf("unexpected body: %q", got)
 	}
 }
+
+func TestForwardStreamingRequestRetriesTransientBadGatewayBeforeStreamingStarts(t *testing.T) {
+	var calls int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			http.Error(w, `{"error":"temporary upstream failure"}`, http.StatusBadGateway)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("data: {\"id\":\"1\"}\n\n"))
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	s := &Server{}
+	w := httptest.NewRecorder()
+	provider := config.ProviderConfig{
+		Name:           "test-provider",
+		BaseURL:        upstream.URL + "/v1",
+		APIKey:         "test-key",
+		TimeoutSeconds: 10,
+	}
+	status, _, _, _, err := s.forwardStreamingRequest(context.Background(), provider, "/v1/chat/completions", []byte(`{"model":"x","stream":true}`), http.Header{}, w)
+	if err != nil {
+		t.Fatalf("forwardStreamingRequest returned error: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("unexpected status: %d", status)
+	}
+	if calls != 3 {
+		t.Fatalf("expected 3 upstream attempts, got %d", calls)
+	}
+	wantBody := "data: {\"id\":\"1\"}\n\ndata: [DONE]\n\n"
+	if got := w.Body.String(); got != wantBody {
+		t.Fatalf("unexpected body: %q", got)
+	}
+}
